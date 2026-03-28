@@ -33,7 +33,7 @@ impl World {
         Chunk::generate(self.seed, pos)
     }
 
-    pub fn height_at_world(&self, world_x: i32, world_z: i32) -> u16 {
+pub fn height_at_world(&self, world_x: i32, world_z: i32) -> u16 {
         let chunk_x = div_floor(world_x, CHUNK_SIZE as i32);
         let chunk_z = div_floor(world_z, CHUNK_SIZE as i32);
         let local_x = mod_floor(world_x, CHUNK_SIZE as i32) as usize;
@@ -43,6 +43,21 @@ impl World {
             z: chunk_z,
         });
         chunk.height_at(local_x, local_z)
+    }
+
+    pub fn block_at_world(&self, world_x: i32, world_y: i32, world_z: i32) -> Block {
+        if world_y < 0 || world_y >= WORLD_HEIGHT as i32 {
+            return Block::Air;
+        }
+        let chunk_x = div_floor(world_x, CHUNK_SIZE as i32);
+        let chunk_z = div_floor(world_z, CHUNK_SIZE as i32);
+        let local_x = mod_floor(world_x, CHUNK_SIZE as i32) as usize;
+        let local_z = mod_floor(world_z, CHUNK_SIZE as i32) as usize;
+        let chunk = self.generate_chunk(ChunkPos {
+            x: chunk_x,
+            z: chunk_z,
+        });
+        chunk.block_at(local_x, world_y as usize, local_z)
     }
 }
 
@@ -181,10 +196,70 @@ fn index(x: usize, y: usize, z: usize) -> usize {
 }
 
 fn generate_height(seed: u64, world_x: i64, world_z: i64) -> u32 {
-    let base = 64u32;
-    let variation = 16u32;
-    let h = hash2d(seed, world_x, world_z);
-    base + (h % variation)
+    let base = 64.0;
+    let coarse = value_noise(seed, world_x, world_z, 64.0);
+    let fine = value_noise(seed ^ 0x9E37, world_x, world_z, 16.0);
+    let mut h = base + coarse * 12.0 + fine * 4.0;
+
+    // simple smoothing: average with 4-neighbors
+    let n1 = value_noise(seed, world_x - 1, world_z, 64.0) * 12.0
+        + value_noise(seed ^ 0x9E37, world_x - 1, world_z, 16.0) * 4.0;
+    let n2 = value_noise(seed, world_x + 1, world_z, 64.0) * 12.0
+        + value_noise(seed ^ 0x9E37, world_x + 1, world_z, 16.0) * 4.0;
+    let n3 = value_noise(seed, world_x, world_z - 1, 64.0) * 12.0
+        + value_noise(seed ^ 0x9E37, world_x, world_z - 1, 16.0) * 4.0;
+    let n4 = value_noise(seed, world_x, world_z + 1, 64.0) * 12.0
+        + value_noise(seed ^ 0x9E37, world_x, world_z + 1, 16.0) * 4.0;
+
+    h = (h + base + n1 + base + n2 + base + n3 + base + n4) / 5.0;
+
+    h.round().clamp(1.0, (WORLD_HEIGHT - 1) as f32) as u32
+}
+
+fn value_noise(seed: u64, world_x: i64, world_z: i64, scale: f32) -> f32 {
+    let fx = world_x as f32 / scale;
+    let fz = world_z as f32 / scale;
+    let x0 = fx.floor() as i64;
+    let z0 = fz.floor() as i64;
+    let x1 = x0 + 1;
+    let z1 = z0 + 1;
+
+    let tx = fx - x0 as f32;
+    let tz = fz - z0 as f32;
+    let u = smoothstep(tx);
+    let v = smoothstep(tz);
+
+    let v00 = hash2d(seed, x0, z0) as f32 / u32::MAX as f32;
+    let v10 = hash2d(seed, x1, z0) as f32 / u32::MAX as f32;
+    let v01 = hash2d(seed, x0, z1) as f32 / u32::MAX as f32;
+    let v11 = hash2d(seed, x1, z1) as f32 / u32::MAX as f32;
+
+    let a = lerp(v00, v10, u);
+    let b = lerp(v01, v11, u);
+    lerp(a, b, v)
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+fn smoothstep(t: f32) -> f32 {
+    t * t * (3.0 - 2.0 * t)
+}
+
+pub fn world_to_chunk(world_x: i32, world_z: i32) -> (ChunkPos, usize, usize) {
+    let chunk_x = div_floor(world_x, CHUNK_SIZE as i32);
+    let chunk_z = div_floor(world_z, CHUNK_SIZE as i32);
+    let local_x = mod_floor(world_x, CHUNK_SIZE as i32) as usize;
+    let local_z = mod_floor(world_z, CHUNK_SIZE as i32) as usize;
+    (
+        ChunkPos {
+            x: chunk_x,
+            z: chunk_z,
+        },
+        local_x,
+        local_z,
+    )
 }
 
 fn div_floor(a: i32, b: i32) -> i32 {

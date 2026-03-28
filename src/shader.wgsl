@@ -1,11 +1,11 @@
 struct VsIn {
     @location(0) position: vec3<f32>,
-    @location(1) color: vec3<f32>,
+    @location(1) color: vec4<f32>,
 };
 
 struct VsOut {
     @builtin(position) position: vec4<f32>,
-    @location(0) color: vec3<f32>,
+    @location(0) color: vec4<f32>,
 };
 
 struct Camera {
@@ -25,5 +25,5 @@ fn vs_main(input: VsIn) -> VsOut {
 
 @fragment
 fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(input.color, 1.0);
+    return input.color;
 }
