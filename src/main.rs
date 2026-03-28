@@ -5,6 +5,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
 use bevy::render::render_resource::PrimitiveTopology;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use bevy::app::AppExit;
 use std::collections::HashMap;
 
 fn main() {
@@ -13,13 +14,18 @@ fn main() {
         .add_plugins((DefaultPlugins, FrameTimeDiagnosticsPlugin::default()))
         .init_resource::<LoadingState>()
         .init_resource::<ChunkMap>()
+        .init_resource::<MenuState>()
         .add_systems(Startup, setup)
         .add_systems(
             Update,
             (
                 player_movement_system,
+                player_animation_system,
+                shadow_system,
                 camera_orbit_system,
                 terrain_stream_system,
+                menu_toggle_system,
+                menu_button_system,
                 hud_system,
             ),
         )
@@ -38,6 +44,30 @@ struct PlayerPhysics {
     on_ground: bool,
 }
 
+#[derive(Component, Clone)]
+struct Limb {
+    kind: LimbKind,
+    base: Transform,
+}
+
+#[derive(Component, Default)]
+struct PlayerAnim {
+    phase: f32,
+}
+
+#[derive(Clone, Copy)]
+enum LimbKind {
+    Head,
+    Torso,
+    ArmL,
+    ArmR,
+    LegL,
+    LegR,
+}
+
+#[derive(Component)]
+struct Shadow;
+
 #[derive(Component)]
 struct Terrain;
 
@@ -45,6 +75,11 @@ struct Terrain;
 struct LoadingState {
     loading: bool,
     progress: f32,
+}
+
+#[derive(Resource, Default)]
+struct MenuState {
+    open: bool,
 }
 
 #[derive(Resource)]
@@ -65,6 +100,15 @@ struct LoadingText;
 #[derive(Component)]
 struct LoadingOverlay;
 
+#[derive(Component)]
+struct MenuRoot;
+
+#[derive(Component)]
+struct ContinueButton;
+
+#[derive(Component)]
+struct ExitButton;
+
 #[derive(Resource, Default)]
 struct ChunkMap {
     entities: HashMap<IVec2, Entity>,
@@ -76,22 +120,155 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut loading: ResMut<LoadingState>,
 ) {
-    // Player
-    let player_mesh = meshes.add(Capsule3d::new(0.4, 1.0));
+    // Player root
     let player_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.8, 0.75, 0.65),
         perceptual_roughness: 0.9,
         ..default()
     });
-    commands.spawn((
+    let player = commands.spawn((
         Player,
         PlayerPhysics {
             velocity: Vec3::ZERO,
             on_ground: false,
         },
-        Mesh3d(player_mesh),
-        MeshMaterial3d(player_mat),
-        Transform::from_xyz(0.0, 2.0, 0.0),
+        Transform::from_xyz(0.0, 0.0, 0.0),
+        Visibility::Visible,
+        InheritedVisibility::default(),
+        ViewVisibility::default(),
+        PlayerAnim::default(),
+    ));
+    let player_entity = player.id();
+
+    // Humanoid parts
+    let torso_mesh = meshes.add(Cuboid::new(0.8, 1.0, 0.4));
+    let head_mesh = meshes.add(Cuboid::new(0.5, 0.5, 0.5));
+    let arm_mesh = meshes.add(Cuboid::new(0.25, 0.7, 0.25));
+    let leg_mesh = meshes.add(Cuboid::new(0.28, 1.0, 0.28));
+    let eye_mesh = meshes.add(Cuboid::new(0.08, 0.08, 0.02));
+    let nose_mesh = meshes.add(Cuboid::new(0.05, 0.08, 0.02));
+    let mouth_mesh = meshes.add(Cuboid::new(0.2, 0.05, 0.02));
+    let eye_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.05, 0.05, 0.05),
+        unlit: true,
+        ..default()
+    });
+    let nose_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.7, 0.55, 0.45),
+        unlit: true,
+        ..default()
+    });
+    let mouth_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.6, 0.2, 0.2),
+        unlit: true,
+        ..default()
+    });
+
+    commands.entity(player_entity).with_children(|parent| {
+        let torso_base = Transform::from_xyz(0.0, 0.8, 0.0);
+        parent.spawn((
+            Mesh3d(torso_mesh),
+            MeshMaterial3d(player_mat.clone()),
+            torso_base,
+            Limb {
+                kind: LimbKind::Torso,
+                base: torso_base,
+            },
+        ));
+
+        let head_base = Transform::from_xyz(0.0, 1.65, 0.0);
+        parent
+            .spawn((
+                Mesh3d(head_mesh),
+                MeshMaterial3d(player_mat.clone()),
+                head_base,
+                Limb {
+                    kind: LimbKind::Head,
+                    base: head_base,
+                },
+            ))
+            .with_children(|head_parent| {
+                let face_z = -0.26;
+                head_parent.spawn((
+                    Mesh3d(eye_mesh.clone()),
+                    MeshMaterial3d(eye_mat.clone()),
+                    Transform::from_xyz(-0.12, 0.08, face_z),
+                ));
+                head_parent.spawn((
+                    Mesh3d(eye_mesh),
+                    MeshMaterial3d(eye_mat.clone()),
+                    Transform::from_xyz(0.12, 0.08, face_z),
+                ));
+                head_parent.spawn((
+                    Mesh3d(nose_mesh),
+                    MeshMaterial3d(nose_mat),
+                    Transform::from_xyz(0.0, 0.0, face_z),
+                ));
+                head_parent.spawn((
+                    Mesh3d(mouth_mesh),
+                    MeshMaterial3d(mouth_mat),
+                    Transform::from_xyz(0.0, -0.12, face_z),
+                ));
+            });
+
+        let arm_l_base = Transform::from_xyz(-0.55, 0.8, 0.0);
+        parent.spawn((
+            Mesh3d(arm_mesh.clone()),
+            MeshMaterial3d(player_mat.clone()),
+            arm_l_base,
+            Limb {
+                kind: LimbKind::ArmL,
+                base: arm_l_base,
+            },
+        ));
+
+        let arm_r_base = Transform::from_xyz(0.55, 0.8, 0.0);
+        parent.spawn((
+            Mesh3d(arm_mesh),
+            MeshMaterial3d(player_mat.clone()),
+            arm_r_base,
+            Limb {
+                kind: LimbKind::ArmR,
+                base: arm_r_base,
+            },
+        ));
+
+        let leg_l_base = Transform::from_xyz(-0.25, -0.2, 0.0);
+        parent.spawn((
+            Mesh3d(leg_mesh.clone()),
+            MeshMaterial3d(player_mat.clone()),
+            leg_l_base,
+            Limb {
+                kind: LimbKind::LegL,
+                base: leg_l_base,
+            },
+        ));
+
+        let leg_r_base = Transform::from_xyz(0.25, -0.2, 0.0);
+        parent.spawn((
+            Mesh3d(leg_mesh),
+            MeshMaterial3d(player_mat),
+            leg_r_base,
+            Limb {
+                kind: LimbKind::LegR,
+                base: leg_r_base,
+            },
+        ));
+    });
+
+    // Ground shadow (blob)
+    let shadow_mesh = meshes.add(Plane3d::default().mesh().size(1.4, 1.4));
+    let shadow_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.0, 0.0, 0.0, 0.35),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    commands.spawn((
+        Shadow,
+        Mesh3d(shadow_mesh),
+        MeshMaterial3d(shadow_mat),
+        Transform::from_xyz(0.0, 0.02, 0.0),
     ));
 
     commands.insert_resource(CameraRig {
@@ -205,6 +382,85 @@ fn setup(
             ));
         });
 
+    // Pause menu (hidden by default)
+    commands
+        .spawn((
+            MenuRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                top: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.02, 0.02, 0.04, 0.6)),
+            ZIndex(30),
+            Visibility::Hidden,
+        ))
+        .with_children(|parent| {
+            parent
+                .spawn((
+                    Node {
+                        width: Val::Px(320.0),
+                        height: Val::Px(220.0),
+                        flex_direction: FlexDirection::Column,
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        row_gap: Val::Px(12.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.08, 0.1, 0.14, 0.9)),
+                ))
+                .with_children(|panel| {
+                    panel.spawn((
+                        Text::new("Paused"),
+                        TextFont::from_font_size(28.0),
+                        TextColor(Color::WHITE),
+                    ));
+                    panel.spawn((
+                        Button,
+                        ContinueButton,
+                        Node {
+                            width: Val::Px(200.0),
+                            height: Val::Px(44.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.2, 0.5, 0.3, 0.9)),
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("Continue"),
+                            TextFont::from_font_size(20.0),
+                            TextColor(Color::WHITE),
+                        ));
+                    });
+                    panel.spawn((
+                        Button,
+                        ExitButton,
+                        Node {
+                            width: Val::Px(200.0),
+                            height: Val::Px(44.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.6, 0.2, 0.2, 0.9)),
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("Exit"),
+                            TextFont::from_font_size(20.0),
+                            TextColor(Color::WHITE),
+                        ));
+                    });
+                });
+        });
+
     loading.loading = true;
     loading.progress = 0.0;
 }
@@ -214,7 +470,11 @@ fn player_movement_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut player_q: Query<(&mut Transform, &mut PlayerPhysics), With<Player>>,
     rig: Res<CameraRig>,
+    menu: Res<MenuState>,
 ) {
+    if menu.open {
+        return;
+    }
     let Ok((mut transform, mut phys)) = player_q.single_mut() else {
         return;
     };
@@ -239,7 +499,8 @@ fn player_movement_system(
         dir = dir.normalize();
     }
 
-    let speed = 6.0;
+    let is_running = keys.pressed(KeyCode::ShiftLeft);
+    let speed = if is_running { 18.0 } else { 6.0 };
     let gravity = -20.0;
     let jump_speed = 7.5;
     let dt = time.delta_secs();
@@ -256,7 +517,7 @@ fn player_movement_system(
     transform.translation += phys.velocity * dt;
 
     let ground_y = height_at(transform.translation.x, transform.translation.z);
-    let min_y = ground_y + 1.0;
+    let min_y = ground_y + 0.7;
     if transform.translation.y < min_y {
         transform.translation.y = min_y;
         phys.velocity.y = 0.0;
@@ -268,15 +529,78 @@ fn player_movement_system(
     }
 }
 
+fn player_animation_system(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut player_q: Query<(&PlayerPhysics, &mut PlayerAnim), With<Player>>,
+    mut limbs: Query<(&mut Transform, &Limb)>,
+    menu: Res<MenuState>,
+) {
+    if menu.open {
+        return;
+    }
+    let Ok((phys, mut anim)) = player_q.single_mut() else {
+        return;
+    };
+
+    let moving = Vec3::new(phys.velocity.x, 0.0, phys.velocity.z).length() > 0.1;
+    let run = keys.pressed(KeyCode::ShiftLeft);
+    let speed = if run { 7.5 } else { 6.75 };
+
+    if moving {
+        anim.phase += time.delta_secs() * speed;
+    } else {
+        anim.phase = 0.0;
+    }
+
+    let swing = anim.phase.sin() * if run { 0.9 } else { 0.6 };
+    let knee = (anim.phase + std::f32::consts::FRAC_PI_2).sin() * 0.3;
+
+    for (mut transform, limb) in limbs.iter_mut() {
+        let mut t = limb.base;
+        match limb.kind {
+            LimbKind::ArmL => {
+                t.rotate_x(swing);
+            }
+            LimbKind::ArmR => {
+                t.rotate_x(-swing);
+            }
+            LimbKind::LegL => {
+                t.rotate_x(-swing);
+            }
+            LimbKind::LegR => {
+                t.rotate_x(swing);
+            }
+            LimbKind::Head => {
+                t.rotate_y(swing * 0.1);
+                t.rotate_x(knee * 0.05);
+            }
+            LimbKind::Torso => {
+                t.rotate_y(swing * 0.05);
+            }
+        }
+        transform.translation = t.translation;
+        transform.rotation = t.rotation;
+    }
+}
+
 fn camera_orbit_system(
     mouse_motion: Res<AccumulatedMouseMotion>,
     mut rig: ResMut<CameraRig>,
     mut cursor_opts: Query<&mut CursorOptions, With<PrimaryWindow>>,
     mut queries: ParamSet<(
-        Query<&Transform, With<Player>>,
-        Query<&mut Transform, With<ThirdPersonCamera>>,
+        Query<&Transform, (With<Player>, Without<ThirdPersonCamera>)>,
+        Query<&mut Transform, (With<ThirdPersonCamera>, Without<Player>)>,
     )>,
+    menu: Res<MenuState>,
 ) {
+    if menu.open {
+        if let Ok(mut opts) = cursor_opts.single_mut() {
+            opts.grab_mode = CursorGrabMode::None;
+            opts.visible = true;
+        }
+        return;
+    }
     if let Ok(mut opts) = cursor_opts.single_mut() {
         if opts.grab_mode == CursorGrabMode::None {
             opts.grab_mode = CursorGrabMode::Locked;
@@ -290,7 +614,7 @@ fn camera_orbit_system(
     rig.pitch = rig.pitch.clamp(-0.9, 0.5);
 
     let target = {
-        let mut p0 = queries.p0();
+        let p0 = queries.p0();
         let Ok(player_tf) = p0.single() else {
             return;
         };
@@ -309,8 +633,85 @@ fn camera_orbit_system(
     )
     .normalize();
     let offset = -forward * rig.distance + Vec3::Y * rig.height;
-    cam_tf.translation = target + offset;
+    let mut cam_pos = target + offset;
+    let ground_y = height_at(cam_pos.x, cam_pos.z);
+    let min_cam_y = ground_y + 0.8;
+    if cam_pos.y < min_cam_y {
+        cam_pos.y = min_cam_y;
+    }
+    cam_tf.translation = cam_pos;
     cam_tf.look_at(target, Vec3::Y);
+}
+
+fn shadow_system(
+    player_q: Query<&Transform, (With<Player>, Without<Shadow>)>,
+    mut shadow_q: Query<&mut Transform, (With<Shadow>, Without<Player>)>,
+) {
+    let Ok(player_tf) = player_q.single() else {
+        return;
+    };
+    let Ok(mut shadow_tf) = shadow_q.single_mut() else {
+        return;
+    };
+    let ground_y = height_at(player_tf.translation.x, player_tf.translation.z);
+    shadow_tf.translation = Vec3::new(player_tf.translation.x, ground_y + 0.02, player_tf.translation.z);
+}
+
+fn menu_toggle_system(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut menu: ResMut<MenuState>,
+    mut menu_vis: Query<&mut Visibility, With<MenuRoot>>,
+    mut cursor_opts: Query<&mut CursorOptions, With<PrimaryWindow>>,
+) {
+    if keys.just_pressed(KeyCode::Escape) {
+        menu.open = !menu.open;
+    }
+    if let Ok(mut vis) = menu_vis.single_mut() {
+        *vis = if menu.open {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+    if let Ok(mut opts) = cursor_opts.single_mut() {
+        if menu.open {
+            opts.grab_mode = CursorGrabMode::None;
+            opts.visible = true;
+        }
+    }
+}
+
+fn menu_button_system(
+    mut menu: ResMut<MenuState>,
+    mut menu_vis: Query<&mut Visibility, With<MenuRoot>>,
+    mut cursor_opts: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    mut commands: Commands,
+    mut buttons: Query<(&Interaction, &mut BackgroundColor, Option<&ContinueButton>, Option<&ExitButton>), Changed<Interaction>>,
+) {
+    for (interaction, mut color, is_continue, is_exit) in &mut buttons {
+        match *interaction {
+            Interaction::Pressed => {
+                if is_continue.is_some() {
+                    menu.open = false;
+                    if let Ok(mut vis) = menu_vis.single_mut() {
+                        *vis = Visibility::Hidden;
+                    }
+                    if let Ok(mut opts) = cursor_opts.single_mut() {
+                        opts.grab_mode = CursorGrabMode::Locked;
+                        opts.visible = false;
+                    }
+                } else if is_exit.is_some() {
+                    commands.write_message(AppExit::Success);
+                }
+            }
+            Interaction::Hovered => {
+                color.0.set_alpha(1.0);
+            }
+            Interaction::None => {
+                color.0.set_alpha(0.9);
+            }
+        }
+    }
 }
 
 fn hud_system(
@@ -464,11 +865,14 @@ fn build_chunk_mesh(chunk_pos: IVec2) -> Mesh {
             positions.push([px, h, pz]);
             uvs.push([x as f32 / CHUNK_RES as f32, z as f32 / CHUNK_RES as f32]);
 
-            let h_l = heights[idx.saturating_sub(1)];
-            let h_r = heights[(idx + 1).min(heights.len() - 1)];
-            let h_d = heights[idx.saturating_sub(CHUNK_RES + 1)];
-            let h_u = heights[(idx + CHUNK_RES + 1).min(heights.len() - 1)];
-            let normal = Vec3::new(h_l - h_r, 2.0, h_d - h_u).normalize();
+            let world_x = chunk_pos.x as f32 * CHUNK_SIZE as f32 + px;
+            let world_z = chunk_pos.y as f32 * CHUNK_SIZE as f32 + pz;
+            let sample = step.max(0.5);
+            let h_l = height_at(world_x - sample, world_z);
+            let h_r = height_at(world_x + sample, world_z);
+            let h_d = height_at(world_x, world_z - sample);
+            let h_u = height_at(world_x, world_z + sample);
+            let normal = Vec3::new(h_l - h_r, 2.5, h_d - h_u).normalize();
             normals.push(normal.to_array());
         }
     }
